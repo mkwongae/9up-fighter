@@ -1,0 +1,895 @@
+// --- Game Constants ---
+const GAME_WIDTH = 960; 
+const GAME_HEIGHT = 540;
+const GRAVITY = 0.6;
+const DRAG = 0.85;
+const Z_BOUNDS = { min: 0, max: 200 };
+const HORIZON_Y = GAME_HEIGHT * 0.4; 
+const FPS = 30;
+const FRAME_DELAY = 1000 / FPS;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = GAME_WIDTH;
+canvas.height = GAME_HEIGHT;
+
+// --- State ---
+const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, a: false, s: false, d: false };
+let lastTap = { key: '', time: 0 };
+let entities = [];
+let player; 
+let particles = [];
+let projectiles = [];
+let items = [];
+let weapons = [];
+let frameCount = 0;
+let gameOver = false;
+let lastFrameTime = 0;
+let animationId = null;
+let isHost = false;
+let myUserId = "user_" + Math.floor(Math.random() * 100000);
+let socket = null;
+let roomId = "Lobby"; // Initialize roomId
+
+// --- UI & Start ---
+const menuScreen = document.getElementById('menu-screen');
+const lobbyScreen = document.getElementById('lobby-screen');
+const gameContainer = document.getElementById('game-container');
+const statusIndicator = document.getElementById('status-indicator');
+const debugPanel = document.getElementById('debug-panel');
+const btnStartMatch = document.getElementById('btn-start-match');
+const playerListEl = document.getElementById('player-list');
+const p1Label = document.getElementById('p1-label');
+
+document.getElementById('btn-create').addEventListener('click', () => connect('localhost:8080', true));
+document.getElementById('btn-join').addEventListener('click', () => {
+    const ipInput = document.getElementById('server-ip');
+    if (ipInput) {
+        const ip = ipInput.value;
+        connect(ip, false);
+    } else {
+        console.error("Input element 'server-ip' not found!");
+    }
+});
+
+btnStartMatch.addEventListener('click', () => {
+    send({ type: 'start_game' });
+    launchGame();
+});
+
+// --- Networking ---
+function connect(address, asHost) {
+    statusIndicator.innerText = "Connecting to " + address;
+    isHost = asHost;
+    
+    try {
+        socket = new WebSocket(`ws://${address}`);
+    } catch(e) {
+        alert("Invalid Address. Use IP:PORT");
+        return;
+    }
+
+    socket.onopen = () => {
+        console.log("Connected to WS Server");
+        // Send handshake
+        send({ type: 'join', id: myUserId, isHost: isHost });
+        
+        menuScreen.style.display = 'none';
+        lobbyScreen.style.display = 'flex';
+        document.getElementById('lobby-ip').innerText = address;
+        
+        if (isHost) {
+            btnStartMatch.disabled = false;
+            btnStartMatch.style.opacity = 1;
+        }
+        
+        player = new Entity(100, 100, 'player');
+        player.id = myUserId; 
+        player.ownerId = myUserId; 
+        player.isHost = isHost;
+        entities = [player];
+        
+        updateLobbyUI();
+    };
+
+    socket.onmessage = (event) => {
+        let msg;
+        try {
+             if (event.data instanceof Blob) return; 
+             msg = JSON.parse(event.data);
+        } catch (e) { return; }
+
+        if (msg.type === 'start_game') {
+            launchGame();
+        }
+        else if (msg.type === 'state_update') {
+            handleRemoteUpdate(msg.data);
+        }
+        else if (msg.type === 'hit') {
+            handleRemoteHit(msg);
+        }
+        else if (msg.type === 'spawn_enemy') {
+            handleRemoteSpawn(msg);
+        }
+        else if (msg.type === 'remove') { 
+            const ent = entities.find(e => e.id === msg.id);
+            if (ent) ent.markedForDeletion = true;
+        }
+        else if (msg.type === 'join') {
+            if (!entities.find(e => e.id === msg.id)) {
+                 const p2 = new Entity(100, 100, 'player');
+                 p2.id = msg.id;
+                 p2.isRemote = true;
+                 p2.color = '#e67e22';
+                 p2.isHost = msg.isHost;
+                 entities.push(p2);
+            }
+            if (isHost) {
+                 send({
+                     type: 'lobby_update',
+                     players: entities.filter(e => e.type === 'player').map(p => ({id: p.id, isHost: p.isHost}))
+                 });
+            }
+            updateLobbyUI();
+        }
+        else if (msg.type === 'lobby_update') {
+             msg.players.forEach(pData => {
+                 if (pData.id !== myUserId && !entities.find(e => e.id === pData.id)) {
+                     const p2 = new Entity(100, 100, 'player');
+                     p2.id = pData.id;
+                     p2.isRemote = true;
+                     p2.color = '#e67e22';
+                     p2.isHost = pData.isHost;
+                     entities.push(p2);
+                 }
+             });
+             updateLobbyUI();
+        }
+    };
+
+    socket.onerror = (e) => {
+        console.error(e);
+        statusIndicator.innerText = "Connection Failed";
+    };
+    
+    socket.onclose = () => {
+        statusIndicator.innerText = "Disconnected";
+        alert("Connection lost");
+        location.reload();
+    };
+}
+
+function send(data) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(data));
+    }
+}
+
+function updateLobbyUI() {
+    playerListEl.innerHTML = "";
+    const sortedPlayers = entities.filter(e => e.type === 'player').sort((a,b) => {
+        if (a.isHost) return -1;
+        if (b.isHost) return 1;
+        return a.id.localeCompare(b.id);
+    });
+    
+    sortedPlayers.forEach((p, i) => {
+        const li = document.createElement('li');
+        const role = p.isHost ? " (HOST)" : "";
+        const me = p.id === myUserId ? " (You)" : "";
+        li.innerHTML = `<span>Player ${i+1}${role}${me}</span> <span class="ready-status">Ready</span>`;
+        playerListEl.appendChild(li);
+    });
+}
+
+function launchGame() {
+    lobbyScreen.style.display = 'none';
+    gameContainer.style.display = 'flex'; 
+    p1Label.innerText = isHost ? "PLAYER 1 (HOST)" : "PLAYER 2";
+    gameLoop(0);
+    
+    if (isHost) {
+        setTimeout(() => spawnEnemy(), 2000);
+    }
+}
+
+function handleRemoteUpdate(data) {
+    if (data.id === myUserId) return; 
+    
+    let ent = entities.find(e => e.id === data.id);
+    if (!ent) {
+        if (data.type === 'player') {
+            ent = new Entity(data.x, data.z, 'player');
+            ent.color = '#e67e22';
+        } else {
+            ent = new Entity(data.x, data.z, 'enemy');
+        }
+        ent.id = data.id;
+        ent.ownerId = data.ownerId;
+        ent.isRemote = true;
+        entities.push(ent);
+    }
+    
+    ent.targetX = data.x; 
+    ent.targetZ = data.z; 
+    ent.targetY = data.y;
+    ent.state = data.state;
+    ent.facing = data.facing;
+    ent.hp = data.hp;
+    ent.weapon = data.weapon;
+    ent.lastSeen = Date.now();
+}
+
+function handleRemoteSpawn(msg) {
+    const e = new Entity(msg.x, msg.z, 'enemy');
+    e.id = msg.id;
+    e.ownerId = msg.ownerId;
+    e.isRemote = true; 
+    entities.push(e);
+}
+
+function handleRemoteHit(msg) {
+    const target = entities.find(e => e.id === msg.targetId);
+    if (target && (target.id === myUserId || target.ownerId === myUserId)) {
+        target.takeDamage(msg.damage, msg.forceX, msg.forceY);
+    }
+}
+
+// --- Game Objects ---
+
+function drawWeaponShape(ctx, type) {
+    if (type === 'bat') {
+        ctx.fillStyle = '#d35400'; ctx.fillRect(-2, -35, 4, 50); 
+    } else if (type === 'sword') {
+        ctx.fillStyle = '#bdc3c7'; ctx.fillRect(-2, -40, 4, 50); 
+        ctx.fillStyle = '#2c3e50'; ctx.fillRect(-6, 5, 12, 4); ctx.fillRect(-2, 5, 4, 10);
+    } else if (type === 'spear') {
+        ctx.fillStyle = '#8e44ad'; ctx.fillRect(-1, -70, 2, 100); 
+        ctx.fillStyle = '#bdc3c7'; ctx.beginPath(); ctx.moveTo(0,-80); ctx.lineTo(-3,-70); ctx.lineTo(3,-70); ctx.fill();
+    }
+}
+
+class Weapon {
+    constructor(x, z, type, startY = 800) {
+        this.x = x; this.z = z; this.y = startY;
+        this.type = type; 
+        this.vx = 0; this.vz = 0; this.vy = startY > 0 ? -15 : 5; 
+        this.state = startY > 0 ? 'falling' : 'ground'; 
+        this.markedForDeletion = false;
+    }
+    update() {
+        if (this.state === 'falling' || this.y > 0) {
+            this.vy -= GRAVITY; this.y += this.vy; this.x += this.vx; this.z += this.vz;
+            if (this.y <= 0) {
+                this.y = 0; 
+                if (Math.abs(this.vy) > 2) { this.vy = -this.vy * 0.5; this.vx *= 0.5; }
+                else { this.vy = 0; this.vx = 0; this.state = 'ground'; }
+            }
+        } else if (this.state === 'ground') {
+            this.y = Math.abs(Math.sin(frameCount * 0.1)) * 3;
+        }
+    }
+    draw(ctx) {
+        const sx = this.x; const sy = HORIZON_Y + this.z - this.y;
+        drawShadow(ctx, this.x, HORIZON_Y + this.z, 0, 15);
+        ctx.save(); ctx.translate(sx, sy);
+        if(this.y > 10) ctx.rotate(frameCount * 0.2); 
+        else ctx.rotate(Math.sin(frameCount * 0.05) * 0.1); 
+        drawWeaponShape(ctx, this.type);
+        ctx.restore();
+    }
+}
+
+class Item {
+    constructor(x, z, type) {
+        this.x = x; this.z = z; this.y = 60; this.type = type; this.vy = 3; 
+        this.markedForDeletion = false; this.life = 600; 
+    }
+    update() {
+        if (this.y > 0) { this.vy -= GRAVITY; this.y += this.vy; } else { this.y = 0; this.vy = 0; }
+        this.life--; if (this.life <= 0) this.markedForDeletion = true;
+        if (!player) return;
+        if (Math.abs(player.x - this.x) < 30 && Math.abs(player.z - this.z) < 20 && Math.abs(player.y - this.y) < 40 && player.hp > 0) {
+            if (this.type === 'hp') { player.hp = Math.min(player.hp + 30, 100); createParticle(this.x, this.z, this.y + 40, 'text', '+HP'); }
+            else if (this.type === 'mp') { player.mp = Math.min(player.mp + 30, 100); createParticle(this.x, this.z, this.y + 40, 'text', '+MP'); }
+            this.markedForDeletion = true;
+        }
+    }
+    draw(ctx) {
+        const screenX = this.x; const screenY = HORIZON_Y + this.z - this.y;
+        drawShadow(ctx, this.x, HORIZON_Y + this.z, 0, 10);
+        const bob = Math.sin(frameCount * 0.1) * 3;
+        ctx.save(); ctx.translate(screenX, screenY + bob - 10);
+        ctx.fillStyle = this.type === 'hp' ? '#e74c3c' : '#3498db'; 
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.rect(-6, -6, 12, 14); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#eee'; ctx.beginPath(); ctx.rect(-3, -12, 6, 6); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.rect(-3, -4, 4, 8); ctx.fill();
+        ctx.restore();
+    }
+}
+
+class Entity {
+    constructor(x, z, type) {
+        this.x = x; this.z = z; this.y = 0;
+        this.vx = 0; this.vz = 0; this.vy = 0;
+        this.type = type;
+        this.isRemote = false;
+        this.targetX = x; this.targetZ = z; this.targetY = 0;
+        this.state = 'idle'; this.stateTimer = 0;
+        this.hp = 100; this.mp = 100;
+        this.comboCount = 0; this.comboTimer = 0;
+        this.invulnerable = 0;
+        this.color = type === 'player' ? '#3498db' : '#e74c3c';
+        this.markedForDeletion = false;
+        this.ownerId = null; this.id = null;
+        this.weapon = null; 
+        this.lastSeen = Date.now();
+        this.isHost = false; 
+    }
+
+    update() {
+        if (this.isRemote) {
+            if (!isNaN(this.targetX)) this.x += (this.targetX - this.x) * 0.2;
+            if (!isNaN(this.targetZ)) this.z += (this.targetZ - this.z) * 0.2;
+            if (!isNaN(this.targetY)) this.y = this.targetY;
+            if (['attack','uppercut'].includes(this.state) && this.stateTimer === 0) this.stateTimer = 20;
+            this.stateTimer--;
+            return;
+        }
+
+        this.x += this.vx; this.z += this.vz; this.y += this.vy;
+
+        if (this.y > 0) this.vy -= GRAVITY;
+        else { this.y = 0; this.vy = 0; if(['jump','jump_kick','uppercut'].includes(this.state)) this.setState('idle'); }
+
+        if (this.y === 0) { this.vx *= DRAG; this.vz *= DRAG; }
+        if (this.z < 0) this.z = 0;
+
+        this.stateTimer--; this.invulnerable--; this.comboTimer--;
+        if(this.comboTimer < 0) this.comboCount = 0;
+
+        if (Math.abs(this.vx)>0.5 || Math.abs(this.vz)>0.5) { if(this.state==='idle' && this.y===0) this.state='walk'; }
+        else { if(this.state==='walk' && this.y===0) this.state='idle'; }
+
+        if (['attack', 'hurt', 'heal', 'whirlwind', 'run_attack', 'weapon_attack'].includes(this.state) && this.stateTimer <= 0) this.setState('idle');
+        
+        if (this.state === 'fallen') {
+             if (this.type === 'enemy' && this.stateTimer <= 0) {
+                 this.markedForDeletion = true;
+                 if (Math.random() < 0.3) {
+                     const type = Math.random() > 0.5 ? 'hp' : 'mp';
+                     items.push(new Item(this.x, this.z, type));
+                 }
+                 if (isHost) {
+                     send({ type: 'remove', id: this.id });
+                 }
+             } else if (this.type === 'player' && this.stateTimer <= 0) { this.state = 'rise'; this.stateTimer = 30; }
+        }
+        if (this.state === 'rise' && this.stateTimer <= 0) { this.setState('idle'); this.invulnerable = 60; }
+        if (this.mp < 100 && frameCount % 10 === 0) this.mp++;
+
+        // Broadcast state
+        if (frameCount % 3 === 0) { 
+             send({
+                 type: 'state_update',
+                 data: {
+                     id: this.id,
+                     type: this.type,
+                     ownerId: this.ownerId,
+                     x: Math.round(this.x),
+                     z: Math.round(this.z),
+                     y: Math.round(this.y),
+                     state: this.state,
+                     facing: this.facing,
+                     hp: this.hp,
+                     weapon: this.weapon
+                 }
+             });
+        }
+    }
+
+    setState(newState) {
+        if (this.state === 'fallen' || this.state === 'rise') return;
+        if (this.state === 'hurt' && !['fallen','idle'].includes(newState)) return;
+        this.state = newState; this.stateTimer = 0;
+        
+        if (newState === 'attack') this.stateTimer = 30; 
+        if (newState === 'weapon_attack') this.stateTimer = 30;
+        if (newState === 'jump_kick') this.stateTimer = 60;
+        if (newState === 'uppercut') this.stateTimer = 60; 
+        if (newState === 'whirlwind') this.stateTimer = 80;
+        if (newState === 'heal') this.stateTimer = 70;
+        if (newState === 'run_attack') this.stateTimer = 50;
+        if (newState === 'hurt') this.stateTimer = 20;
+        if (newState === 'fallen') this.stateTimer = 60;
+        if (newState === 'defend') this.stateTimer = 10;
+    }
+
+    takeDamage(amount, forceX, forceY = 0) {
+        if (this.invulnerable > 0 || ['fallen','rise'].includes(this.state)) return;
+        if (this.state === 'defend') {
+            amount = Math.floor(amount * 0.2); this.vx = forceX * 0.5;
+            createParticle(this.x, this.z, this.y + 40, 'block');
+        } else {
+            this.vx = forceX; this.vy = forceY; this.setState('hurt');
+            createParticle(this.x, this.z, this.y + 40, 'hit');
+            if ((forceY > 0 || amount > 15) && this.weapon) dropWeapon(this);
+        }
+        this.hp -= amount;
+        if (this.hp <= 0) { this.hp = 0; this.setState('fallen'); if(this.weapon) dropWeapon(this); }
+    }
+
+    draw(ctx) {
+        const screenX = this.x; const screenY = HORIZON_Y + this.z - this.y; 
+        drawShadow(ctx, this.x, HORIZON_Y + this.z, 0, 20);
+
+        ctx.save(); ctx.translate(screenX, screenY); ctx.scale(this.facing, 1);
+
+        ctx.fillStyle = this.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+
+        let bob = 0; let lean = 0;
+        if (this.state === 'idle') bob = Math.sin(frameCount * 0.1) * 2;
+        if (this.state === 'walk') { bob = Math.sin(frameCount * 0.3) * 3; lean = 0.1; }
+        if (this.state === 'run') { bob = Math.sin(frameCount * 0.5) * 5; lean = 0.3; }
+        if (this.state === 'run_attack') lean = 0.5;
+        if (this.state === 'jump_kick') lean = -0.2; 
+        if (this.state === 'weapon_attack') { const p = (30 - this.stateTimer) / 30; lean = -0.5 + (p * 1.5); }
+
+        ctx.rotate(lean);
+
+        if (this.state === 'fallen') {
+            ctx.rotate(-Math.PI/2); ctx.translate(-20, 0);
+            if (this.type==='enemy' && this.stateTimer<20) ctx.globalAlpha = this.stateTimer/20;
+        }
+        if (this.invulnerable>0 && frameCount%4===0) ctx.globalAlpha = 0.5;
+
+        // LEGS
+        ctx.beginPath();
+        const legFreq = this.state === 'run' ? 0.8 : 0.4;
+        const legAmp = this.state === 'run' ? 15 : 10;
+        const legAngle = (this.state === 'walk' || this.state === 'run') ? Math.sin(frameCount * legFreq) : 0;
+
+        if (this.state === 'jump_kick') {
+            ctx.moveTo(-5, -20); ctx.lineTo(-15, 0); ctx.stroke(); 
+            ctx.beginPath(); ctx.moveTo(5, -20); ctx.lineTo(25, -5); ctx.stroke(); 
+        } else if (this.state === 'whirlwind') {
+            const spin = Math.sin(frameCount * 0.8) * 15;
+            ctx.moveTo(-5, -20); ctx.lineTo(-15 - spin, 0); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(5, -20); ctx.lineTo(15 + spin, 0); ctx.stroke();
+        } else if (this.state !== 'fallen') {
+            ctx.moveTo(-5, -20 + bob); ctx.lineTo(-10 + legAngle * legAmp, 0); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(5, -20 + bob); ctx.lineTo(10 - legAngle * legAmp, 0); ctx.stroke();
+        }
+
+        // BODY
+        ctx.beginPath(); ctx.rect(-10, -50 + bob, 20, 30); ctx.fill(); ctx.stroke();
+
+        // HEAD
+        ctx.fillStyle = '#ffccaa'; ctx.beginPath(); ctx.arc(0, -60 + bob, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#000';
+        if (this.state === 'hurt') ctx.fillText('x x', -8, -58 + bob);
+        else {
+             ctx.beginPath(); ctx.arc(4, -60 + bob, 2, 0, Math.PI*2); ctx.fill();
+             if(this.type==='player') { ctx.fillStyle = this.isRemote?'#e67e22':'red'; ctx.fillRect(-11,-68+bob,22,5); }
+        }
+
+        // ARMS
+        ctx.strokeStyle = this.color; ctx.lineWidth = 4;
+        let armAngle = 0; let armLen = 15; let armY = -35;
+        if (this.state === 'attack') armAngle = -1.5;
+        if (this.state === 'defend') armAngle = -2.5;
+        if (this.state === 'walk') armAngle = Math.sin(frameCount * 0.4);
+        if (this.state === 'run') armAngle = Math.sin(frameCount * 0.8) * 1.5;
+
+        if (this.weapon) {
+            let wx = 10, wy = -35 + bob; let wAngle = -0.5; 
+            if (this.state === 'weapon_attack') { const p = (30 - this.stateTimer) / 30; wAngle = -2.5 + (p * 4); wx = 20; } 
+            else if (this.state === 'walk') { wAngle = -0.5 + Math.sin(frameCount*0.2)*0.2; }
+            ctx.beginPath(); ctx.moveTo(0, -45+bob); ctx.lineTo(wx, wy); ctx.stroke();
+            ctx.save(); ctx.translate(wx, wy); ctx.rotate(wAngle); drawWeaponShape(ctx, this.weapon); ctx.restore();
+        }
+        else if (this.state === 'attack') {
+            const p = (30 - this.stateTimer) / 30; 
+            let punchLen = p < 0.3 ? 15 + (p/0.3) * 20 : 35 - ((p-0.3)/0.7) * 20; 
+            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(punchLen, -45 + bob); ctx.stroke();
+            ctx.fillStyle = '#ffccaa'; ctx.beginPath(); ctx.arc(punchLen, -45+bob, 4, 0, Math.PI*2); ctx.fill();
+        } 
+        else if (this.state === 'uppercut') {
+            ctx.beginPath(); ctx.moveTo(0, -45+bob); ctx.lineTo(10, -80+bob); ctx.stroke();
+            ctx.strokeStyle = `rgba(0, 200, 255, ${this.stateTimer/60})`; ctx.lineWidth = 20;
+            ctx.beginPath(); ctx.moveTo(10, -40+bob); ctx.lineTo(10, -120+bob); ctx.stroke(); ctx.lineWidth = 4;
+        }
+        else if (this.state === 'whirlwind') {
+            ctx.beginPath(); ctx.moveTo(0, -45+bob); ctx.lineTo(20, -45+bob); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -45+bob); ctx.lineTo(-20, -45+bob); ctx.stroke();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.beginPath(); ctx.ellipse(0, -30+bob, 45, 15, 0, 0, Math.PI*2); ctx.stroke();
+            ctx.beginPath(); ctx.ellipse(0, -30+bob, 30, 10, 0, Math.PI, Math.PI*3); ctx.stroke();
+        }
+        else if (this.state === 'run_attack') {
+            ctx.beginPath(); ctx.moveTo(0, -45+bob); ctx.lineTo(15, -45+bob); ctx.stroke(); 
+            ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(-30, -50+bob); ctx.lineTo(-80, -50+bob); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(-30, -30+bob); ctx.lineTo(-60, -30+bob); ctx.stroke();
+        }
+        else if (this.state === 'heal') {
+            ctx.beginPath(); ctx.moveTo(-5, -45+bob); ctx.lineTo(-15, -70+bob); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(5, -45+bob); ctx.lineTo(15, -70+bob); ctx.stroke();
+            ctx.fillStyle = `rgba(0, 255, 0, 0.3)`; ctx.beginPath(); ctx.arc(0, -40+bob, 40, 0, Math.PI*2); ctx.fill();
+        }
+        else {
+            ctx.beginPath();
+            ctx.moveTo(0, -45 + bob);
+            const armX = 15 + Math.cos(armAngle) * 10;
+            const armY = -35 + bob + Math.sin(armAngle) * 10;
+            ctx.lineTo(armX, armY);
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+}
+
+class Projectile {
+    constructor(x, z, y, dir, owner) {
+        this.x = x; this.z = z; this.y = y;
+        this.vx = dir * 12; this.owner = owner;
+        this.life = 40;
+    }
+    update() {
+        this.x += this.vx; this.life--;
+        entities.forEach(ent => {
+            if (ent !== this.owner && ent.type !== this.owner.type && ent.state !== 'fallen' && ent.state !== 'rise') {
+                if (Math.abs(this.x - ent.x) < 30 && Math.abs(this.z - ent.z) < 15 && Math.abs(this.y - ent.y) < 40) {
+                    ent.takeDamage(20, this.vx > 0 ? 5 : -5);
+                    createParticle(this.x, this.z, this.y, 'hit');
+                    this.life = 0;
+                }
+            }
+        });
+    }
+    draw(ctx) {
+        const sx = this.x; const sy = HORIZON_Y + this.z - this.y;
+        const c = this.owner.type === 'player' ? '#0ff' : '#f0f'; 
+        ctx.fillStyle = c; ctx.shadowBlur = 10; ctx.shadowColor = c;
+        ctx.beginPath(); ctx.arc(sx, sy - 30, 10, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0;
+    }
+}
+
+class Particle {
+    constructor(x, z, y, type, text) {
+        this.x = x; this.z = z; this.y = y; this.life = 20;
+        this.type = type; // hit, block, text
+        this.text = text;
+        this.vx = (Math.random() - 0.5) * 5; this.vy = (Math.random() - 0.5) * 5;
+        
+        if (type === 'hit') this.color = 'rgba(255, 255, 0,';
+        else if (type === 'block') this.color = 'rgba(100, 200, 255,';
+        else if (type === 'text') { this.vy = 2; this.life = 40; } 
+    }
+    update() { 
+        if (this.type === 'text') this.y += 1; // Float up
+        else { this.x += this.vx; this.y += this.vy; }
+        this.life--; 
+    }
+    draw(ctx) {
+        const sx = this.x; const sy = HORIZON_Y + this.z - this.y;
+        if (this.type === 'text') {
+            ctx.fillStyle = this.text.includes('HP') ? '#e74c3c' : (this.text.includes('MP') ? '#3498db' : '#fff');
+            ctx.font = '12px monospace';
+            ctx.fillText(this.text, sx - 15, sy - 20);
+        } else {
+            ctx.fillStyle = this.color + this.life/20 + ')';
+            ctx.beginPath(); ctx.rect(sx, sy - 40, this.life, this.life); ctx.fill();
+        }
+    }
+}
+
+function createParticle(x, z, y, type, text) {
+    if (type === 'text') {
+        particles.push(new Particle(x, z, y, type, text));
+    } else {
+        for(let i=0; i<5; i++) particles.push(new Particle(x, z, y, type));
+    }
+}
+
+function drawShadow(ctx, x, y, z, size) {
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath();
+    const s = size * (0.8 + (z / 500)); 
+    ctx.ellipse(x, y, s, s * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+// HOST LOGIC for Spawning
+function spawnEnemy() {
+    if (!isHost) return;
+    
+    const ex = canvas.width + 50;
+    const ez = Math.random() * (Z_BOUNDS.max - Z_BOUNDS.min);
+    const id = "enemy_" + Math.floor(Math.random()*10000);
+    
+    // Send spawn command to everyone
+    send({
+        type: 'spawn_enemy',
+        id: id,
+        ownerId: myUserId,
+        x: ex, z: ez
+    });
+    
+    // Create locally immediately
+    const e = new Entity(ex, ez, 'enemy');
+    e.id = id;
+    e.ownerId = myUserId; 
+    e.facing = -1;
+    entities.push(e);
+}
+
+function spawnWeapon() {
+    if (!isHost) return;
+    const types = ['bat', 'sword', 'spear'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const wx = 50 + Math.random() * (canvas.width - 100);
+    const wz = Math.random() * 200;
+    weapons.push(new Weapon(wx, wz, type));
+}
+
+function dropWeapon(entity) {
+    if (!entity.weapon) return;
+    const w = new Weapon(entity.x, entity.z, entity.weapon, 40); 
+    w.vx = entity.facing * 5; w.vy = 8; w.state = 'falling'; 
+    weapons.push(w);
+    entity.weapon = null;
+}
+
+// --- Logic ---
+
+function handleInput() {
+    if (player.state === 'fallen' || player.state === 'hurt' || player.state === 'rise') return;
+
+    let dx = 0; let dz = 0; const speed = 4;
+    
+    // Drop Weapon
+    if (keys.d && keys.ArrowDown && keys.s) {
+        keys.s = false; dropWeapon(player); return;
+    }
+    // Heal
+    if (keys.d && keys.ArrowUp && keys.s) {
+        keys.s = false; if (player.mp >= 50) performMove(player, 'heal'); return;
+    }
+
+    // Run
+    if (player.state === 'run') {
+        if (player.facing === 1 && !keys.ArrowRight) player.setState('idle');
+        else if (player.facing === -1 && !keys.ArrowLeft) player.setState('idle');
+        else {
+            player.vx = player.facing * 9; 
+            if (keys.ArrowUp) dz = -speed * 0.8; if (keys.ArrowDown) dz = speed * 0.8; player.z += dz;
+        }
+        
+        if (keys.a) { keys.a = false; performMove(player, 'run_attack'); return; }
+        if (keys.s && player.y === 0) { player.vy = 12; player.state = 'jump'; keys.s = false; return; }
+    }
+    else {
+        const isAttacking = ['attack', 'weapon_attack', 'uppercut', 'whirlwind', 'heal'].includes(player.state);
+        if (!isAttacking) {
+            if (keys.ArrowLeft) { dx = -speed; player.facing = -1; }
+            if (keys.ArrowRight) { dx = speed; player.facing = 1; }
+            if (keys.ArrowUp) dz = -speed * 0.7;
+            if (keys.ArrowDown) dz = speed * 0.7;
+
+            if (dx || dz) { 
+                player.vx = dx; 
+                player.z += dz; 
+                if (player.state === 'idle' && player.y === 0) player.state = 'walk'; 
+            } else { 
+                if (player.state === 'walk' && player.y === 0) player.state = 'idle'; 
+            }
+        }
+    }
+
+    if (keys.s && player.y === 0) { 
+        if (!['attack', 'weapon_attack', 'uppercut', 'whirlwind', 'heal'].includes(player.state)) {
+            player.vy = 12; player.state = 'jump'; keys.s = false; 
+        }
+    }
+    
+    if (keys.d) { player.state = 'defend'; player.vx = 0; }
+    
+    if (keys.a && player.state !== 'run') {
+        keys.a = false;
+        if (player.state === 'jump') performMove(player, 'jump_kick');
+        else if (keys.d) {
+            if (keys.ArrowUp && player.mp >= 15) performMove(player, 'uppercut');
+            else if (keys.ArrowDown && player.mp >= 30) performMove(player, 'whirlwind');
+            else if (keys.ArrowLeft || keys.ArrowRight) performMove(player, 'blast');
+        }
+        else if (!['attack', 'hurt', 'uppercut', 'whirlwind', 'heal', 'jump_kick', 'weapon_attack'].includes(player.state) && player.y === 0) {
+            
+            // Pickup Check
+            let pickedUp = false;
+            if (!player.weapon) {
+                for(let w of weapons) {
+                    if (w.state === 'ground' && !w.markedForDeletion && 
+                        Math.abs(player.x - w.x) < 30 && Math.abs(player.z - w.z) < 20) {
+                        
+                        player.weapon = w.type; w.markedForDeletion = true;
+                        createParticle(w.x, w.z, 40, 'text', 'GOT ' + w.type.toUpperCase());
+                        pickedUp = true; break;
+                    }
+                }
+            }
+
+            if (!pickedUp) {
+                if (player.weapon) performMove(player, 'weapon_attack');
+                else performMove(player, 'punch');
+            }
+        }
+    }
+}
+
+function performMove(actor, type) {
+    if (type === 'blast') {
+        actor.mp -= 30; actor.setState('attack');
+        projectiles.push(new Projectile(actor.x, actor.z, actor.y + 30, actor.facing, actor));
+        return;
+    }
+    if (type === 'heal') {
+        actor.mp -= 50; actor.setState('heal'); actor.hp = Math.min(actor.hp + 20, 100);
+        createParticle(actor.x, actor.z, actor.y + 60, 'text', '+HP'); return;
+    }
+
+    let d = 10, fx = 2, fy = 0, rx = 60, ry = 50, rz = 20;
+    if (type === 'uppercut') { actor.mp -= 15; actor.setState('uppercut'); actor.vy = 10; actor.vx = actor.facing * 2; d = 25; fx = 5; fy = 15; ry = 80; } 
+    else if (type === 'jump_kick') { actor.setState('jump_kick'); actor.vx = actor.facing * 6; d = 15; fx = 10; rx = 100; ry = 80; rz = 45; }
+    else if (type === 'whirlwind') { actor.mp -= 30; actor.setState('whirlwind'); actor.vx = actor.facing * 3; d = 15; fx = 8; rx = 80; ry = 60; rz = 40; }
+    else if (type === 'run_attack') { actor.setState('run_attack'); actor.vx = actor.facing * 8; d = 20; fx = 12; rx = 70; ry = 60; }
+    else if (type === 'weapon_attack') {
+        actor.setState('weapon_attack');
+        if (actor.weapon === 'bat') { d=30; fx=8; rx=90; rz=30; }
+        if (actor.weapon === 'sword') { d=25; fx=4; rx=80; rz=30; }
+        if (actor.weapon === 'spear') { d=35; fx=6; rx=120; rz=15; }
+    }
+    else { actor.setState('attack'); actor.comboCount++; actor.comboTimer = 50; }
+
+    entities.forEach(ent => {
+        if (ent !== actor && ent.state !== 'fallen') { 
+            if (Math.abs(ent.x - actor.x) < rx && Math.abs(ent.z - actor.z) < rz && Math.abs(ent.y - actor.y) < ry) {
+                if (type === 'whirlwind' || (actor.facing === 1 && ent.x > actor.x) || (actor.facing === -1 && ent.x < actor.x)) {
+                     createParticle(ent.x, ent.z, ent.y, 'hit');
+                     
+                     if (ent.isRemote || (ent.type === 'enemy' && ent.ownerId !== myUserId)) {
+                        ent.setState('hurt');
+                        ent.vx = actor.facing * 5;
+                        send({
+                            type: 'hit',
+                            targetId: ent.id,
+                            damage: d,
+                            forceX: (ent.x > actor.x ? 1 : -1) * fx,
+                            forceY: fy
+                        });
+                     } else {
+                        ent.takeDamage(d, (ent.x > actor.x ? 1 : -1) * fx, fy);
+                     }
+                }
+            }
+        }
+    });
+}
+
+function updateAI() {
+    entities.forEach(ent => {
+        if (ent.type === 'enemy' && ent.ownerId === myUserId && !['fallen', 'hurt', 'rise', 'whirlwind'].includes(ent.state)) {
+            let target = null;
+            let minDist = 9999;
+            entities.forEach(p => {
+                if (p.type === 'player') {
+                    const d = Math.abs(p.x - ent.x) + Math.abs(p.z - ent.z);
+                    if (d < minDist) { minDist = d; target = p; }
+                }
+            });
+
+            if (target) {
+                const dist = Math.abs(ent.x - target.x);
+                const zDist = Math.abs(ent.z - target.z);
+                ent.facing = target.x > ent.x ? 1 : -1;
+                if (dist > 60 || zDist > 10) {
+                    if (dist > 60) ent.vx += ent.facing * 0.5;
+                    if (zDist > 10) ent.z += (ent.z > target.z ? -1 : 1);
+                    ent.state = 'walk';
+                } else {
+                    if (Math.random() < 0.05) {
+                        if(ent.weapon) performMove(ent, 'weapon_attack'); else performMove(ent, 'punch');
+                    } else ent.state = 'idle';
+                }
+            }
+        }
+    });
+}
+
+function gameLoop(timestamp) {
+    animationId = requestAnimationFrame(gameLoop);
+
+    if (!lastFrameTime) lastFrameTime = timestamp;
+    const deltaTime = timestamp - lastFrameTime;
+
+    if (deltaTime < FRAME_DELAY) return;
+
+    lastFrameTime = timestamp - (deltaTime % FRAME_DELAY);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(0, HORIZON_Y, canvas.width, canvas.height - HORIZON_Y);
+    ctx.strokeStyle = '#388e3c'; ctx.beginPath(); ctx.moveTo(0, HORIZON_Y); ctx.lineTo(canvas.width, HORIZON_Y); ctx.stroke();
+
+    if (!gameOver) {
+        handleInput(); updateAI(); // sendNetworkUpdate(); // Removed as it was not defined in original code, assuming it was a mistake or covered by state_update
+        
+        const enemies = entities.filter(e => e.type === 'enemy');
+        if (isHost && enemies.length < 1 && Math.random() < 0.02) spawnEnemy();
+        if (isHost && Math.random() < 0.002) spawnWeapon(); 
+        
+        entities = entities.filter(e => !e.markedForDeletion);
+        items = items.filter(i => !i.markedForDeletion);
+        weapons = weapons.filter(w => !w.markedForDeletion);
+    }
+
+    items.forEach(i => { i.update(); i.draw(ctx); });
+    weapons.forEach(w => { w.update(); w.draw(ctx); });
+    entities.forEach(e => e.update());
+    projectiles.forEach((p, i) => { p.update(); if (p.life <= 0) projectiles.splice(i, 1); });
+    particles.forEach((p, i) => { p.update(); if (p.life <= 0) particles.splice(i, 1); });
+
+    [...items, ...weapons, ...entities, ...projectiles, ...particles].sort((a, b) => a.z - b.z).forEach(e => {
+        if(e.draw) e.draw(ctx);
+    });
+
+    document.getElementById('p1-hp').style.width = player.hp + '%';
+    document.getElementById('p1-mp').style.width = player.mp + '%';
+
+    if (player.hp <= 0 && !gameOver) {
+        gameOver = true; 
+        showMessage("GAME OVER");
+    }
+
+    const pCount = entities.filter(e => e.type === 'player').length;
+    debugPanel.innerHTML = `
+        <strong>Room:</strong> ${roomId}<br>
+        <strong>Players:</strong> ${pCount}<br>
+        <strong>Role:</strong> ${isHost ? 'HOST' : 'GUEST'}<br>
+        <strong>ID:</strong> ${myUserId}
+    `;
+
+    frameCount++;
+}
+
+function showMessage(text) {
+    const el = document.getElementById('message-area'); el.innerText = text; el.style.display = 'block';
+    setTimeout(() => { if (!gameOver) el.style.display = 'none'; }, 2000);
+}
+
+window.addEventListener('keydown', e => { 
+    if (keys.hasOwnProperty(e.key)) {
+        if (!keys[e.key]) { 
+            const now = Date.now();
+            if (lastTap.key === e.key && now - lastTap.time < 250) {
+                if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && player.state !== 'fallen') {
+                    player.state = 'run';
+                    player.facing = e.key === 'ArrowLeft' ? -1 : 1;
+                }
+            }
+            lastTap = { key: e.key, time: now };
+        }
+        keys[e.key] = true; 
+    }
+});
+
+window.addEventListener('keyup', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; });
+
+const touchMap = { 'd-up':'ArrowUp', 'd-down':'ArrowDown', 'd-left':'ArrowLeft', 'd-right':'ArrowRight', 'btn-atk':'a', 'btn-jmp':'s', 'btn-def':'d' };
+document.querySelectorAll('.d-btn, .act-btn').forEach(el => {
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); for (let c in touchMap) if (el.classList.contains(c)) keys[touchMap[c]] = true; });
+    el.addEventListener('touchend', (e) => { e.preventDefault(); for (let c in touchMap) if (el.classList.contains(c)) keys[touchMap[c]] = false; });
+});
+window.addEventListener('touchstart', function t() {
+    document.getElementById('mobile-controls').style.display = 'block';
+    window.removeEventListener('touchstart', t);
+});
