@@ -78,13 +78,94 @@
             </div>
             <div class="action-btns">
                 <div class="act-btn btn-def" data-key="d">DEF</div>
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>9UP Fighters: Web Arena (WebSocket)</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- MAIN MENU -->
+    <div id="menu-screen" class="screen">
+        <h1>9UP FIGHTERS<br><span style="font-size:20px; color:#aaa">WEB ARENA</span></h1>
+
+        <div class="input-group">
+            <button class="menu-btn" id="btn-create">HOST GAME (Localhost)</button>
+        </div>
+
+        <div class="input-group">
+            <input type="text" id="server-ip" placeholder="Server IP:Port" value="localhost:8080">
+            <button class="menu-btn" id="btn-join">JOIN GAME</button>
+        </div>
+
+        <div style="margin-top:20px; font-size:10px; color:#888">
+            Requires running Node or Python WebSocket server.
+        </div>
+    </div>
+
+    <!-- LOBBY SCREEN -->
+    <div id="lobby-screen" class="screen">
+        <h2>LOBBY</h2>
+        <div style="font-size: 14px; color: #aaa; margin-bottom: 10px;">CONNECTED TO: <span id="lobby-ip"
+                style="color: white; font-weight: bold;"></span></div>
+
+        <ul id="player-list">
+            <li>Waiting for players...</li>
+        </ul>
+
+        <button class="menu-btn" id="btn-start-match" disabled style="opacity: 0.5;">START MATCH</button>
+        <div style="font-size:10px; color:#666; margin-top:10px;">Only Host can start</div>
+    </div>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer">
+            <div style="position: absolute; top: 10px; left: 10px;">
+                <div id="p1-label" style="color:white; text-shadow:1px 1px 0 #000; margin-bottom:2px;">PLAYER 1</div>
+                <div class="hud-bar">
+                    <div class="hud-fill" id="p1-hp"></div>
+                </div>
+                <div class="hud-bar" style="height: 10px;">
+                    <div class="hud-fill mana-fill" id="p1-mp"></div>
+                </div>
+            </div>
+            <div id="debug-panel">Initializing...</div>
+            <div id="instructions">
+                MOVESET<br>
+                Run + A: Dash Attack<br>
+                A: Attack / Pickup<br>
+                Jump + A: Jump Kick<br>
+                Defend + > + A: Blast<br>
+                Defend + ^ + A: Uppercut<br>
+                Defend + v + A: Whirlwind<br>
+                Defend + ^ + S: Heal<br>
+                Defend + v + S: Drop Weapon
+            </div>
+            <div id="message-area">STAGE 1 START</div>
+            <div id="status-indicator">Disconnected</div>
+        </div>
+        <div id="mobile-controls">
+            <div class="d-pad">
+                <div class="d-btn d-up" data-key="ArrowUp"></div>
+                <div class="d-btn d-down" data-key="ArrowDown"></div>
+                <div class="d-btn d-left" data-key="ArrowLeft"></div>
+                <div class="d-btn d-right" data-key="ArrowRight"></div>
+            </div>
+            <div class="action-btns">
+                <div class="act-btn btn-def" data-key="d">DEF</div>
                 <div class="act-btn btn-jmp" data-key="s">JMP</div>
                 <div class="act-btn btn-atk" data-key="a">ATK</div>
             </div>
         </div>
     </div>
 
-    <script src="game.js"></script>
+    <script type="module" src="src/core/Game.js"></script>
+
 </body>
 
 </html>
