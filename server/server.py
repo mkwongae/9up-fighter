@@ -17,7 +17,7 @@ async def handler(websocket):
             # Broadcast the message to all OTHER clients
             # We use a copy of the set to avoid runtime errors if a client disconnects mid-loop
             for client in connected_clients.copy():
-                if client != websocket and client.open:
+                if client != websocket:
                     try:
                         await client.send(message)
                     except websockets.exceptions.ConnectionClosed:
