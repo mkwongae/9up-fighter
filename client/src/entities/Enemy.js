@@ -1,5 +1,5 @@
 import { Entity } from './Entity.js';
-import { performMove } from '../core/Game.js'; // Circular dependency risk? performMove should probably be in a separate module or static method
+
 
 export class Enemy extends Entity {
     constructor(x, z) {

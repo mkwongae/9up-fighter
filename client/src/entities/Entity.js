@@ -1,4 +1,4 @@
-import { GRAVITY, DRAG, frameCount, HORIZON_Y } from '../constants.js';
+import { GRAVITY, DRAG, HORIZON_Y } from '../constants.js';
 import { drawShadow } from '../utils.js';
 import { createParticle } from '../effects/Particle.js';
 import { Item } from '../items/Item.js';
@@ -63,10 +63,10 @@ export class Entity {
             } else if (this.type === 'player' && this.stateTimer <= 0) { this.state = 'rise'; this.stateTimer = 30; }
         }
         if (this.state === 'rise' && this.stateTimer <= 0) { this.setState('idle'); this.invulnerable = 60; }
-        if (this.mp < 100 && frameCount % 10 === 0) this.mp++;
+        if (this.mp < 100 && game.frameCount % 10 === 0) this.mp++;
 
         // Broadcast state
-        if (frameCount % 3 === 0) {
+        if (game.frameCount % 3 === 0) {
             game.network.send({
                 type: 'state_update',
                 data: {
