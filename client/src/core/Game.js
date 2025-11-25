@@ -40,7 +40,30 @@ export class Game {
         this.playerListEl = document.getElementById('player-list');
         this.p1Label = document.getElementById('p1-label');
 
+        // Game pause flag
+        this.paused = false;
+
+        // Set up double-tap handler for running
+        this.input.setDoubleTapHandler((key) => {
+            if (this.player && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+                this.player.setState('run');
+            }
+        });
+
         this.initUI();
+    }
+
+    /** Toggle pause state */
+    togglePause() {
+        this.paused = !this.paused;
+        const btn = document.getElementById('btn-pause');
+        if (btn) btn.innerText = this.paused ? 'RESUME' : 'PAUSE';
+        // Show pause overlay
+        const msgEl = document.getElementById('message-area');
+        if (msgEl) {
+            msgEl.innerText = this.paused ? 'PAUSED' : '';
+            msgEl.style.display = this.paused ? 'block' : 'none';
+        }
     }
 
     get isHost() { return this.network.isHost; }
@@ -52,6 +75,11 @@ export class Game {
             const ipInput = document.getElementById('server-ip');
             if (ipInput) this.connect(ipInput.value, false);
         });
+        // Pause button
+        const pauseBtn = document.getElementById('btn-pause');
+        if (pauseBtn) {
+            pauseBtn.addEventListener('click', () => this.togglePause());
+        }
 
         this.btnStartMatch.addEventListener('click', () => {
             this.network.send({ type: 'start_game' });
@@ -305,9 +333,15 @@ export class Game {
             keys.a = false;
             if (this.player.state === 'jump') this.performMove(this.player, 'jump_kick');
             else if (keys.d) {
-                if (keys.ArrowUp && this.player.mp >= 15) this.performMove(this.player, 'uppercut');
-                else if (keys.ArrowDown && this.player.mp >= 30) this.performMove(this.player, 'whirlwind');
-                else if (keys.ArrowLeft || keys.ArrowRight) this.performMove(this.player, 'blast');
+                if (keys.ArrowUp && this.player.mp >= 15) {
+                    this.performMove(this.player, 'uppercut');
+                }
+                else if (keys.ArrowDown && this.player.mp >= 30) {
+                    this.performMove(this.player, 'whirlwind');
+                }
+                else if (this.player.mp >= 30) {
+                    this.performMove(this.player, 'blast');
+                }
             }
             else if (!['attack', 'hurt', 'uppercut', 'whirlwind', 'heal', 'jump_kick', 'weapon_attack'].includes(this.player.state) && this.player.y === 0) {
 
@@ -405,24 +439,41 @@ export class Game {
         this.ctx.strokeStyle = '#388e3c'; this.ctx.beginPath(); this.ctx.moveTo(0, HORIZON_Y); this.ctx.lineTo(this.canvas.width, HORIZON_Y); this.ctx.stroke();
 
         if (!this.gameOver) {
-            this.handleInput();
-            this.updateAI();
+            // Pause handling – skip state updates but continue rendering
+            if (this.paused) {
+                // No input handling, AI, spawning, or entity updates
+            } else {
+                this.handleInput();
+                this.updateAI();
 
-            const enemies = this.entities.filter(e => e.type === 'enemy');
-            if (this.isHost && enemies.length < 1 && Math.random() < 0.02) this.spawnEnemy();
-            if (this.isHost && Math.random() < 0.002) this.spawnWeapon();
+                const enemies = this.entities.filter(e => e.type === 'enemy');
+                if (this.isHost && enemies.length < 1 && Math.random() < 0.02) this.spawnEnemy();
+                if (this.isHost && Math.random() < 0.002) this.spawnWeapon();
 
-            this.entities = this.entities.filter(e => !e.markedForDeletion);
-            this.items = this.items.filter(i => !i.markedForDeletion);
-            this.weapons = this.weapons.filter(w => !w.markedForDeletion);
+                this.entities = this.entities.filter(e => !e.markedForDeletion);
+                this.items = this.items.filter(i => !i.markedForDeletion);
+                this.weapons = this.weapons.filter(w => !w.markedForDeletion);
+            }
         }
 
-        this.items.forEach(i => { i.update(this.player, this.particles, this.frameCount); i.draw(this.ctx, this.frameCount); });
-        this.weapons.forEach(w => { w.update(this.frameCount); w.draw(this.ctx, this.frameCount); });
-        this.entities.forEach(e => { e.update(this); });
-        this.projectiles.forEach((p, i) => { p.update(this.entities, this.particles); if (p.life <= 0) this.projectiles.splice(i, 1); });
-        this.particles.forEach((p, i) => { p.update(); if (p.life <= 0) this.particles.splice(i, 1); });
 
+        // Update items, weapons, entities (skip physics if paused, but update animations)
+        if (!this.paused) {
+            this.items.forEach(i => { i.update(this.player, this.particles, this.frameCount); });
+            this.weapons.forEach(w => { w.update(this.frameCount); });
+            this.entities.forEach(e => { e.update(this); });
+            this.projectiles.forEach((p, i) => { p.update(this.entities, this.particles); if (p.life <= 0) this.projectiles.splice(i, 1); });
+            this.particles.forEach((p, i) => { p.update(); if (p.life <= 0) this.particles.splice(i, 1); });
+        } else {
+            // When paused, only update animations
+            this.entities.forEach(e => {
+                if (e.animationController) {
+                    e.animationController.update();
+                }
+            });
+        }
+
+        // Draw everything (sorted by z-depth)
         [...this.items, ...this.weapons, ...this.entities, ...this.projectiles, ...this.particles].sort((a, b) => a.z - b.z).forEach(e => {
             if (e.draw) e.draw(this.ctx, this.frameCount);
         });

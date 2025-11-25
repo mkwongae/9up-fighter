@@ -3,6 +3,13 @@ import { drawShadow } from '../utils.js';
 import { createParticle } from '../effects/Particle.js';
 import { Item } from '../items/Item.js';
 import { drawWeaponShape, dropWeapon } from '../weapons/Weapon.js';
+import { SpriteSheet, AnimationController } from '../graphics/SpriteSheet.js';
+import { PLAYER_SPRITE_CONFIG } from '../graphics/PlayerSpriteConfig.js';
+import { ENEMY_SPRITE_CONFIG } from '../graphics/EnemySpriteConfig.js';
+
+// Load sprite sheets (shared across all entities)
+const playerSpriteSheet = new SpriteSheet('./resource/sprite-sheet/player_sprite_sheet.png');
+const enemySpriteSheet = new SpriteSheet('./resource/sprite-sheet/enemy_sprite_sheet.png');
 
 export class Entity {
     constructor(x, z, type) {
@@ -22,6 +29,21 @@ export class Entity {
         this.lastSeen = Date.now();
         this.isHost = false;
         this.facing = 1;
+
+        // Initialize animation controller based on type
+        if (type === 'player') {
+            this.animationController = new AnimationController(
+                playerSpriteSheet,
+                PLAYER_SPRITE_CONFIG.animations
+            );
+            this.spriteConfig = PLAYER_SPRITE_CONFIG;
+        } else {
+            this.animationController = new AnimationController(
+                enemySpriteSheet,
+                ENEMY_SPRITE_CONFIG.animations
+            );
+            this.spriteConfig = ENEMY_SPRITE_CONFIG;
+        }
     }
 
     update(game) {
@@ -64,6 +86,10 @@ export class Entity {
         }
         if (this.state === 'rise' && this.stateTimer <= 0) { this.setState('idle'); this.invulnerable = 60; }
         if (this.mp < 100 && game.frameCount % 10 === 0) this.mp++;
+
+        // Update animation
+        this.animationController.play(this.state);
+        this.animationController.update();
 
         // Broadcast state
         if (game.frameCount % 3 === 0) {
@@ -121,112 +147,123 @@ export class Entity {
     }
 
     draw(ctx, frameCount) {
-        const screenX = this.x; const screenY = HORIZON_Y + this.z - this.y;
+        const screenX = this.x;
+        const screenY = HORIZON_Y + this.z - this.y;
+
+        // Draw shadow
         drawShadow(ctx, this.x, HORIZON_Y + this.z, 0, 20);
 
-        ctx.save(); ctx.translate(screenX, screenY); ctx.scale(this.facing, 1);
+        // Calculate sprite size (80% of original 128px frames)
+        const spriteWidth = this.spriteConfig.frameWidth * 0.8;  // 80% scale
+        const spriteHeight = this.spriteConfig.frameHeight * 0.8;
 
-        ctx.fillStyle = this.color; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+        // Draw sprite
+        this.animationController.draw(
+            ctx,
+            screenX,
+            screenY,
+            spriteWidth,
+            spriteHeight,
+            this.spriteConfig.frameWidth,
+            this.spriteConfig.frameHeight,
+            this.facing === -1  // Flip sprite when facing left
+        );
 
-        let bob = 0; let lean = 0;
-        if (this.state === 'idle') bob = Math.sin(frameCount * 0.1) * 2;
-        if (this.state === 'walk') { bob = Math.sin(frameCount * 0.3) * 3; lean = 0.1; }
-        if (this.state === 'run') { bob = Math.sin(frameCount * 0.5) * 5; lean = 0.3; }
-        if (this.state === 'run_attack') lean = 0.5;
-        if (this.state === 'jump_kick') lean = -0.2;
-        if (this.state === 'weapon_attack') { const p = (30 - this.stateTimer) / 30; lean = -0.5 + (p * 1.5); }
-
-        ctx.rotate(lean);
-
-        if (this.state === 'fallen') {
-            ctx.rotate(-Math.PI / 2); ctx.translate(-20, 0);
-            if (this.type === 'enemy' && this.stateTimer < 20) ctx.globalAlpha = this.stateTimer / 20;
-        }
-        if (this.invulnerable > 0 && frameCount % 4 === 0) ctx.globalAlpha = 0.5;
-
-        // LEGS
-        ctx.beginPath();
-        const legFreq = this.state === 'run' ? 0.8 : 0.4;
-        const legAmp = this.state === 'run' ? 15 : 10;
-        const legAngle = (this.state === 'walk' || this.state === 'run') ? Math.sin(frameCount * legFreq) : 0;
-
-        if (this.state === 'jump_kick') {
-            ctx.moveTo(-5, -20); ctx.lineTo(-15, 0); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(5, -20); ctx.lineTo(25, -5); ctx.stroke();
-        } else if (this.state === 'whirlwind') {
-            const spin = Math.sin(frameCount * 0.8) * 15;
-            ctx.moveTo(-5, -20); ctx.lineTo(-15 - spin, 0); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(5, -20); ctx.lineTo(15 + spin, 0); ctx.stroke();
-        } else if (this.state !== 'fallen') {
-            ctx.moveTo(-5, -20 + bob); ctx.lineTo(-10 + legAngle * legAmp, 0); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(5, -20 + bob); ctx.lineTo(10 - legAngle * legAmp, 0); ctx.stroke();
-        }
-
-        // BODY
-        ctx.beginPath(); ctx.rect(-10, -50 + bob, 20, 30); ctx.fill(); ctx.stroke();
-
-        // HEAD
-        ctx.fillStyle = '#ffccaa'; ctx.beginPath(); ctx.arc(0, -60 + bob, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        ctx.fillStyle = '#000';
-        if (this.state === 'hurt') ctx.fillText('x x', -8, -58 + bob);
-        else {
-            ctx.beginPath(); ctx.arc(4, -60 + bob, 2, 0, Math.PI * 2); ctx.fill();
-            if (this.type === 'player') { ctx.fillStyle = this.isRemote ? '#e67e22' : 'red'; ctx.fillRect(-11, -68 + bob, 22, 5); }
-        }
-
-        // ARMS
-        ctx.strokeStyle = this.color; ctx.lineWidth = 4;
-        let armAngle = 0; let armLen = 15; let armY = -35;
-        if (this.state === 'attack') armAngle = -1.5;
-        if (this.state === 'defend') armAngle = -2.5;
-        if (this.state === 'walk') armAngle = Math.sin(frameCount * 0.4);
-        if (this.state === 'run') armAngle = Math.sin(frameCount * 0.8) * 1.5;
-
+        // Draw weapon if equipped (overlay on top of sprite)
         if (this.weapon) {
-            let wx = 10, wy = -35 + bob; let wAngle = -0.5;
-            if (this.state === 'weapon_attack') { const p = (30 - this.stateTimer) / 30; wAngle = -2.5 + (p * 4); wx = 20; }
-            else if (this.state === 'walk') { wAngle = -0.5 + Math.sin(frameCount * 0.2) * 0.2; }
-            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(wx, wy); ctx.stroke();
-            ctx.save(); ctx.translate(wx, wy); ctx.rotate(wAngle); drawWeaponShape(ctx, this.weapon); ctx.restore();
+            ctx.save();
+            ctx.translate(screenX, screenY);
+            ctx.scale(this.facing, 1);
+
+            let wx = 20, wy = -40;
+            let wAngle = -0.5;
+
+            if (this.state === 'weapon_attack') {
+                const p = (30 - this.stateTimer) / 30;
+                wAngle = -2.5 + (p * 4);
+                wx = 30;
+            } else if (this.state === 'walk' || this.state === 'run') {
+                wAngle = -0.5 + Math.sin(frameCount * 0.2) * 0.2;
+            }
+
+            ctx.translate(wx, wy);
+            ctx.rotate(wAngle);
+            drawWeaponShape(ctx, this.weapon);
+            ctx.restore();
         }
-        else if (this.state === 'attack') {
-            const p = (30 - this.stateTimer) / 30;
-            let punchLen = p < 0.3 ? 15 + (p / 0.3) * 20 : 35 - ((p - 0.3) / 0.7) * 20;
-            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(punchLen, -45 + bob); ctx.stroke();
-            ctx.fillStyle = '#ffccaa'; ctx.beginPath(); ctx.arc(punchLen, -45 + bob, 4, 0, Math.PI * 2); ctx.fill();
-        }
-        else if (this.state === 'uppercut') {
-            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(10, -80 + bob); ctx.stroke();
-            ctx.strokeStyle = `rgba(0, 200, 255, ${this.stateTimer / 60})`; ctx.lineWidth = 20;
-            ctx.beginPath(); ctx.moveTo(10, -40 + bob); ctx.lineTo(10, -120 + bob); ctx.stroke(); ctx.lineWidth = 4;
-        }
-        else if (this.state === 'whirlwind') {
-            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(20, -45 + bob); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(-20, -45 + bob); ctx.stroke();
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-            ctx.beginPath(); ctx.ellipse(0, -30 + bob, 45, 15, 0, 0, Math.PI * 2); ctx.stroke();
-            ctx.beginPath(); ctx.ellipse(0, -30 + bob, 30, 10, 0, Math.PI, Math.PI * 3); ctx.stroke();
-        }
-        else if (this.state === 'run_attack') {
-            ctx.beginPath(); ctx.moveTo(0, -45 + bob); ctx.lineTo(15, -45 + bob); ctx.stroke();
-            ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.moveTo(-30, -50 + bob); ctx.lineTo(-80, -50 + bob); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(-30, -30 + bob); ctx.lineTo(-60, -30 + bob); ctx.stroke();
-        }
-        else if (this.state === 'heal') {
-            ctx.beginPath(); ctx.moveTo(-5, -45 + bob); ctx.lineTo(-15, -70 + bob); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(5, -45 + bob); ctx.lineTo(15, -70 + bob); ctx.stroke();
-            ctx.fillStyle = `rgba(0, 255, 0, 0.3)`; ctx.beginPath(); ctx.arc(0, -40 + bob, 40, 0, Math.PI * 2); ctx.fill();
-        }
-        else {
+
+        // Draw special effects overlays
+        ctx.save();
+        ctx.translate(screenX, screenY);
+        ctx.scale(this.facing, 1);
+
+        // Uppercut energy effect
+        if (this.state === 'uppercut') {
+            ctx.strokeStyle = `rgba(0, 200, 255, ${this.stateTimer / 60})`;
+            ctx.lineWidth = 20;
             ctx.beginPath();
-            ctx.moveTo(0, -45 + bob);
-            const armX = 15 + Math.cos(armAngle) * 10;
-            const armY = -35 + bob + Math.sin(armAngle) * 10;
-            ctx.lineTo(armX, armY);
+            ctx.moveTo(10, -40);
+            ctx.lineTo(10, -120);
             ctx.stroke();
         }
 
+        // Whirlwind effect
+        if (this.state === 'whirlwind') {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.ellipse(0, -30, 45, 15, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.ellipse(0, -30, 30, 10, 0, Math.PI, Math.PI * 3);
+            ctx.stroke();
+        }
+
+        // Run attack speed lines
+        if (this.state === 'run_attack') {
+            ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-30, -50);
+            ctx.lineTo(-80, -50);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(-30, -30);
+            ctx.lineTo(-60, -30);
+            ctx.stroke();
+        }
+
+        // Heal aura
+        if (this.state === 'heal') {
+            ctx.fillStyle = `rgba(0, 255, 0, 0.3)`;
+            ctx.beginPath();
+            ctx.arc(0, -40, 40, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Invulnerability flash
+        if (this.invulnerable > 0 && frameCount % 4 === 0) {
+            ctx.globalAlpha = 0.5;
+        }
+
         ctx.restore();
+
+        // Draw HP bar above entity
+        if (this.type === 'enemy' || this.isRemote) {
+            const barWidth = 40;
+            const barHeight = 4;
+            const barX = screenX - barWidth / 2;
+            const barY = screenY - spriteHeight - 10;
+
+            ctx.fillStyle = '#000';
+            ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
+
+            ctx.fillStyle = '#f00';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+
+            ctx.fillStyle = '#0f0';
+            const hpPercent = this.hp / 100;
+            ctx.fillRect(barX, barY, barWidth * hpPercent, barHeight);
+        }
     }
 }

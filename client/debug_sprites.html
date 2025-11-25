@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Sprite Sheet Debugger</title>
+    <style>
+        body {
+            background: #333;
+            color: white;
+            font-family: monospace;
+        }
+
+        .container {
+            position: relative;
+            display: inline-block;
+            margin: 20px;
+        }
+
+        img {
+            border: 2px solid #666;
+            image-rendering: pixelated;
+        }
+
+        .grid {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+
+        .row-label {
+            position: absolute;
+            left: -30px;
+            color: #ffff00;
+            font-weight: bold;
+            font-size: 20px;
+            text-shadow: 1px 1px 0 #000;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Sprite Sheet Debugger</h1>
+    <p>Use this to identify which Row # corresponds to which animation.</p>
+    <div class="container" id="container">
+        <!-- Image will be injected here -->
+    </div>
+
+    <script>
+        const FRAME_SIZE = 128;
+        const IMAGE_SRC = 'resource/sprite-sheet/player_sprite_sheet.png';
+
+        const img = new Image();
+        img.src = IMAGE_SRC;
+        img.onload = () => {
+            const container = document.getElementById('container');
+            container.appendChild(img);
+
+            // Create Grid Overlay
+            const rows = Math.ceil(img.height / FRAME_SIZE);
+            const cols = Math.ceil(img.width / FRAME_SIZE);
+
+            for (let r = 0; r < rows; r++) {
+                // Add Row Label
+                const label = document.createElement('div');
+                label.className = 'row-label';
+                label.innerText = r;
+                label.style.top = (r * FRAME_SIZE + FRAME_SIZE / 2 - 10) + 'px';
+                container.appendChild(label);
+
+                // Draw horizontal line
+                const hLine = document.createElement('div');
+                hLine.style.position = 'absolute';
+                hLine.style.left = '0';
+                hLine.style.width = '100%';
+                hLine.style.height = '1px';
+                hLine.style.background = 'rgba(255, 0, 0, 0.5)';
+                hLine.style.top = (r * FRAME_SIZE) + 'px';
+                container.appendChild(hLine);
+            }
+
+            // Draw vertical lines
+            for (let c = 0; c <= cols; c++) {
+                const vLine = document.createElement('div');
+                vLine.style.position = 'absolute';
+                vLine.style.top = '0';
+                vLine.style.height = '100%';
+                vLine.style.width = '1px';
+                vLine.style.background = 'rgba(255, 0, 0, 0.5)';
+                vLine.style.left = (c * FRAME_SIZE) + 'px';
+                container.appendChild(vLine);
+            }
+        };
+    </script>
+</body>
+
+</html>
